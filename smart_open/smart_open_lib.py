@@ -25,6 +25,7 @@ import logging
 import os
 import subprocess
 import sys
+import bz2
 import requests
 if sys.version_info[0] == 2:
     import httplib
@@ -418,6 +419,19 @@ class S3OpenWrite(object):
         self.chunk_bytes = 0
         self.parts = 0
 
+        # compression
+        self.compress = False
+        ext = outkey.name.split(".")
+        if len(ext) > 0:
+            if ext[-1] == 'bz2':
+                self.compressor = bz2.BZ2Compressor()
+                self.compress = True
+            elif ext[-1] == 'gz':
+                self.compressor = None
+                self.compress = True
+
+
+
     def __str__(self):
         return "%s<bucket: %s, key: %s, min_part_size: %s>" % (
             self.__class__.__name__, self.outbucket, self.outkey, self.min_part_size,
@@ -438,9 +452,13 @@ class S3OpenWrite(object):
         if not isinstance(b, six.binary_type):
             raise TypeError("input must be a binary string")
 
-        self.lines.append(b)
-        self.chunk_bytes += len(b)
-        self.total_size += len(b)
+        if self.compress:
+            b = self.compressor.compress(b)
+
+        if b is not None:
+            self.lines.append(b)
+            self.chunk_bytes += len(b)
+            self.total_size += len(b)
 
         if self.chunk_bytes >= self.min_part_size:
             buff = b"".join(self.lines)
@@ -454,6 +472,13 @@ class S3OpenWrite(object):
         raise NotImplementedError("seek() not implemented yet")
 
     def close(self):
+
+        if self.compress:
+            b = self.compressor.flush()
+            self.lines.append(b)
+            self.chunk_bytes += len(b)
+            self.total_size += len(b)
+
         buff = b"".join(self.lines)
         if buff:
             logger.info("uploading last part #%i, %i bytes (total %.3fGB)" % (self.parts, len(buff), self.total_size / 1024.0 ** 3))
